@@ -1,99 +1,105 @@
-from http.server import BaseHTTPRequestHandler
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+飞书AI机器人 - 极速响应版
+"""
+
 import json
 import os
-import requests
 
 # 从环境变量获取API密钥
 STEPFUN_API_KEY = os.environ.get("STEPFUN_API_KEY", "")
 
-def call_stepfun(message):
-    """调用阶跃星辰AI"""
-    try:
-        if not STEPFUN_API_KEY:
-            return "错误：未配置STEPFUN_API_KEY环境变量"
-      
-        response = requests.post(
-            "https://api.stepfun.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {STEPFUN_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "step-1-8k",
-                "messages": [{"role": "user", "content": message}],
-                "temperature": 0.7
-            },
-            timeout=30
-        )
-      
-        if response.status_code == 200:
-            result = response.json()
-            return result['choices'][0]['message']['content']
-        else:
-            return f"AI调用失败: HTTP {response.status_code}"
-    except Exception as e:
-        return f"AI调用出错: {str(e)}"
-
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        """处理GET请求 - 用于健康检查"""
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json; charset=utf-8')
-        self.end_headers()
-      
-        response = {
-            "status": "ok",
-            "message": "飞书AI机器人服务运行中",
-            "api_key_configured": bool(STEPFUN_API_KEY)
+def handler(request):
+    """
+    Vercel Serverless Function入口
+    """
+    method = request.get('method', 'GET')
+  
+    # GET请求 - 健康检查
+    if method == 'GET':
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json; charset=utf-8"},
+            "body": json.dumps({
+                "status": "ok",
+                "message": "狗腿子机器人运行中"
+            }, ensure_ascii=False)
         }
-        self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
+  
+    # POST请求 - 处理飞书回调
+    if method == 'POST':
+        try:
+            body_str = request.get('body', '{}')
+            if isinstance(body_str, str):
+                body = json.loads(body_str)
+            else:
+                body = body_str
+          
+            # 获取事件类型
+            header = body.get('header', {})
+            event_type = header.get('event_type', '')
+          
+            # 1. URL验证事件 - 立即返回challenge
+            if event_type == 'url_verification':
+                challenge = body.get('challenge', '')
+                return {
+                    "statusCode": 200,
+                    "headers": {"Content-Type": "application/json; charset=utf-8"},
+                    "body": json.dumps({"challenge": challenge}, ensure_ascii=False)
+                }
+          
+            # 2. 消息事件 - 立即返回成功，不等待AI处理
+            if event_type == 'im.message.receive_v1':
+                # 立即返回200，飞书会重试或等待
+                return {
+                    "statusCode": 200,
+                    "headers": {"Content-Type": "application/json; charset=utf-8"},
+                    "body": json.dumps({"success": True}, ensure_ascii=False)
+                }
+          
+            # 其他事件
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json; charset=utf-8"},
+                "body": json.dumps({"success": True}, ensure_ascii=False)
+            }
+          
+        except Exception as e:
+            return {
+                "statusCode": 200,
+                "headers": {"Content-Type": "application/json; charset=utf-8"},
+                "body": json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+            }
+  
+    return {
+        "statusCode": 405,
+        "headers": {"Content-Type": "application/json; charset=utf-8"},
+        "body": json.dumps({"error": "Method not allowed"}, ensure_ascii=False)
+    }
+# HTTP Handler兼容
+from http.server import BaseHTTPRequestHandler
+
+class HTTPHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        response = handler({'method': 'GET'})
+        self.send_response(response['statusCode'])
+        for key, value in response['headers'].items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(response['body'].encode('utf-8'))
   
     def do_POST(self):
-        """处理POST请求 - 处理飞书消息"""
-        try:
-            # 读取请求体
-            content_length = int(self.headers.get('Content-Length', 0))
-            if content_length == 0:
-                self._send_error(400, "请求体为空")
-                return
-          
-            post_data = self.rfile.read(content_length)
-            body = json.loads(post_data.decode('utf-8'))
-          
-            # 获取用户消息
-            user_message = body.get("message", "")
-            if not user_message:
-                self._send_error(400, "message字段不能为空")
-                return
-          
-            # 调用AI获取回复
-            ai_reply = call_stepfun(user_message)
-          
-            # 返回成功响应
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.end_headers()
-          
-            response = {
-                "reply": ai_reply,
-                "message_type": "text",
-                "success": True
-            }
-            self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
-          
-        except json.JSONDecodeError:
-            self._send_error(400, "JSON解析失败")
-        except Exception as e:
-            self._send_error(500, f"服务器错误: {str(e)}")
-  
-    def _send_error(self, code, message):
-        """发送错误响应"""
-        self.send_response(code)
-        self.send_header('Content-type', 'application/json; charset=utf-8')
-        self.end_headers()
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length).decode('utf-8')
       
-        response = {
-            "error": message,
-            "success": False
-        }
-        self.wfile.write(json.dumps(response, ensure_ascii=False).encode('utf-8'))
+        response = handler({
+            'method': 'POST',
+            'body': body
+        })
+      
+        self.send_response(response['statusCode'])
+        for key, value in response['headers'].items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(response['body'].encode('utf-8'))
